@@ -2,18 +2,12 @@
 
 int	main()
 {
-	char	*input;
-
+	char	*tokens;
 	while (1)
 	{
-		input = readline("minishell->"); //TODO
-		if (!input)
-		{
-			printf("exit");
+		tokens = parse();
+		if (!tokens)
 			break;
-		}
-		//process_input(input); TODO
-		free(input);
 	}
 	return (0);
 }

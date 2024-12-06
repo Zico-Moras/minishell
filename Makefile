@@ -1,5 +1,6 @@
 CC = cc
 CFLAGS = -Wall -Werror -Wextra -g
+RFLAGS = -lreadline
 
 LIBFT_REPO = git@github.com:Zico-Moras/42-libft.git
 LIBFT_DIR = 42-libft
@@ -26,7 +27,7 @@ $(LIBFT):
 
 
 $(NAME): $(OBJ) $(LIBFT) 
-	$(CC) $(CFLAGS) $(OBJ) -o $(NAME) $(LIBFT)
+	$(CC) $(CFLAGS) $(OBJ) -o $(NAME) $(LIBFT) $(RFLAGS)
  
 
 
