@@ -1,0 +1,1151 @@
+# Minishell Project Context - For Claude
+
+## 📋 Project Status Summary
+
+**Current Stage:** Parser complete, Expander in progress
+**Date:** January 2025
+**Project:** 42 Minishell - Building a bash-like shell
+
+### ✅ Completed Components
+- [x] Lexer (tokenization)
+- [x] Token utilities
+- [x] Parser (AST generation)
+- [x] Parser syntax validation
+- [x] AST node utilities
+- [ ] Expander (variable expansion) - IN PROGRESS
+- [ ] Executor (command execution) - NOT STARTED
+- [ ] Builtins (echo, cd, pwd, export, unset, env, exit) - NOT STARTED
+
+---
+
+## 🏗️ Architecture Overview
+
+### Pipeline Flow
+```
+User Input (string)
+    ↓
+LEXER → Tokens (linked list)
+    ↓
+PARSER → AST (tree structure)
+    ↓
+EXPANDER → Expanded AST (with variables resolved)
+    ↓
+EXECUTOR → Execute commands
+```
+
+### Key Design Decisions
+1. **AST-based parsing** - Using Abstract Syntax Tree for command representation
+2. **Three-stage processing** - Lexer → Parser → Expander → Executor
+3. **No backslash escaping** - Per minishell requirements, `\` is literal
+4. **No semicolon support** - `;` is treated as a word, not command separator
+5. **Token EOF always present** - Every token list ends with TOKEN_EOF node
+
+---
+
+## 📁 Project Structure
+
+```
+grok_minishell/
+├── includes/
+│   └── minishell.h          # Main header file
+├── libft/                   # 42 libft library
+├── builtins/                # Built-in commands (not yet implemented)
+├── main.c                   # Main entry point
+├── init.c                   # Shell initialization
+├── input.c                  # Readline integration
+├── signals.c                # Signal handling
+├── utils.c                  # Utility functions
+├── free.c                   # Memory cleanup
+│
+├── lexer.c                  # Main lexer logic
+├── lexer_token_utils.c      # Token creation/manipulation
+├── lexer_utils.c            # Lexer helper functions
+├── lexer_utils2.c           # Additional lexer helpers
+│
+├── parser.c                 # Main parser logic
+├── parser_utils.c           # Parser helper functions (redir, args)
+├── parser_utils2.c          # Parser helper functions (tokens, pipes)
+├── parser_syntax.c          # Syntax validation
+├── parse_node_utils.c       # AST node utilities
+│
+├── expander_utils.c         # Expander utility functions
+│
+├── test_lexer_main.c        # Lexer test suite
+├── test_parser_main.c       # Parser test suite
+└── Makefile                 # Build configuration
+```
+
+---
+
+## 🔧 Data Structures
+
+### 1. Token Structure
+```c
+typedef enum e_token_type
+{
+    TOKEN_EOF,           // End of input
+    TOKEN_WORD,          // Regular word
+    TOKEN_VAR,           // Variable ($VAR)
+    TOKEN_PIPE,          // |
+    TOKEN_REDIR_IN,      // <
+    TOKEN_REDIR_OUT,     // >
+    TOKEN_REDIR_APPEND,  // >>
+    TOKEN_HEREDOC        // <<
+} t_token_type;
+
+typedef struct s_token
+{
+    t_token_type    type;
+    char            *value;
+    int             quoted;    // 0=none, 1=single, 2=double
+    struct s_token  *next;
+} t_token;
+```
+
+### 2. AST Node Structure
+```c
+typedef enum e_node_type
+{
+    NODE_COMMAND,        // Simple command
+    NODE_PIPE,           // Pipeline
+    NODE_REDIR_IN,       // < redirect
+    NODE_REDIR_OUT,      // > redirect
+    NODE_REDIR_APPEND,   // >> redirect
+    NODE_HEREDOC         // << heredoc
+} t_node_type;
+
+typedef struct s_redir_node
+{
+    t_node_type         type;
+    char                *file;       // Filename (unexpanded)
+    struct s_redir_node *next;
+} t_redir_node;
+
+typedef struct s_ast_node
+{
+    t_node_type         type;
+    char                **args;      // NULL-terminated array
+    t_redir_node        *redirects;  // Linked list of redirects
+    struct s_ast_node   *left;       // Left child (for pipes)
+    struct s_ast_node   *right;      // Right child (for pipes)
+} t_ast_node;
+```
+
+### 3. Parser Context
+```c
+typedef struct s_parser
+{
+    t_token *tokens;      // Original token list
+    t_token *current;     // Current position
+    int     error;        // Error flag
+    char    *error_msg;   // Error message
+} t_parser;
+```
+
+### 4. Shell Context
+```c
+typedef struct s_shell
+{
+    char *line;           // Current input line
+    char **envp;          // Environment variables
+    int  exit_status;     // Last command exit status ($?)
+} t_shell;
+```
+
+---
+
+## 🎯 Component Details
+
+### LEXER (✅ Complete)
+
+**Purpose:** Convert input string into token list
+
+**Key Functions:**
+- `lexer(char *input)` - Main entry point
+- `handle_operators()` - Process |, <, >, <<, >>
+- `handle_word()` - Extract words and variables
+- `process_quote_open()` - Handle quoted strings
+
+**Behavior:**
+- Always creates TOKEN_EOF at end
+- Handles empty quotes: `""` and `''`
+- Treats `\` as literal (no escaping)
+- Marks tokens with quote status
+- Variable detection: anything with `$` is TOKEN_VAR (even `$HOME$`)
+
+**Example:**
+```
+Input:  echo "hello" $HOME | cat
+Output: [WORD:echo] [WORD:hello,quoted=1] [VAR:$HOME] [PIPE:|] [WORD:cat] [EOF]
+```
+
+---
+
+### PARSER (✅ Complete)
+
+**Purpose:** Convert token list into AST
+
+**Key Functions:**
+- `parse(t_token *tokens)` - Main entry point
+- `validate_syntax()` - Check for syntax errors
+- `parse_pipeline()` - Handle pipes (left-associative)
+- `parse_command()` - Parse single command with args/redirects
+- `parse_single_redir()` - Parse one redirection
+
+**Validation Rules:**
+- ❌ Pipe at start: `| cat`
+- ❌ Pipe at end: `cat |`
+- ❌ Double pipe: `cat | | grep`
+- ❌ Redirect without file: `cat >`
+- ✅ Multiple redirects: `cat < in1 < in2` (valid!)
+- ✅ Redirects before command: `< in cat` (valid!)
+
+**Example:**
+```
+Input:  cat < in | grep test > out
+
+AST:         PIPE
+            /    \
+       COMMAND   COMMAND
+       cat<in    grep>out
+```
+
+---
+
+### EXPANDER (🔨 In Progress)
+
+**Purpose:** Expand variables in AST before execution
+
+**What Needs Expansion:**
+- ✅ `$HOME`, `$USER`, `$PATH` - Environment variables
+- ✅ `$?` - Exit status
+- ✅ `$$` - Process ID (optional)
+- ❌ `'$HOME'` - Single quotes block expansion
+- ✅ `"$HOME"` - Double quotes allow expansion
+
+**Functions Needed:**
+```c
+// Main expander
+int expand_ast(t_ast_node *ast, t_shell *shell);
+
+// String expansion
+char *expand_string(char *str, int quoted, t_shell *shell);
+
+// Utilities
+char *get_env_value(char *var_name, t_shell *shell);
+int extract_var_name(char *str);
+```
+
+---
+
+## 🧪 Testing Infrastructure
+
+### Test Files
+1. **test_lexer_main.c** - 119 tests for lexer
+2. **test_parser_main.c** - 50+ tests for parser
+3. **test_expander_main.c** - Tests for expander (not yet created)
+
+### Makefile Targets
+```bash
+make test_lexer        # Build lexer tests
+make test_parser       # Build parser tests
+make test_expander     # Build expander tests
+make test_all          # Build all tests
+```
+
+---
+
+## 📝 Important Implementation Notes
+
+### Lexer Specifics
+1. **Quote handling:** Does NOT interpret `\"` as escape - treats as two chars
+2. **Variable detection:** Simple - if it contains `$`, mark as VAR
+3. **Empty strings:** Creates token for `""` and `''`
+4. **Operators:** No spaces required - `cat<in>out` is valid
+
+### Parser Specifics
+1. **Left-associative pipes:** `a|b|c` becomes `((a|b)|c)`
+2. **Static helpers:** Most helper functions are `static`
+3. **Norm compliance:** All functions under 25 lines
+4. **Memory management:** Frees on error, uses ast_free() recursively
+
+### Current Limitations
+1. **No word splitting** - After expansion, might need to split on spaces
+2. **No heredoc expansion** - Heredoc content expansion not implemented
+
+---
+
+## 🐛 Known Issues / TODO
+
+### High Priority
+- [ ] Complete expander implementation
+- [ ] Add quote removal after expansion
+- [ ] Handle word splitting after variable expansion
+
+### Medium Priority
+- [ ] Implement executor
+- [ ] Implement built-in commands
+- [ ] Handle heredoc content expansion
+
+### Low Priority
+- [ ] Add `$$` (process ID) support
+- [ ] Optimize memory allocation
+- [ ] Add more edge case tests
+
+---
+
+## 💡 Key Insights for Next Developer
+
+1. **Token EOF is mandatory** - Every token list ends with TOKEN_EOF, so you'll never hit NULL when iterating
+
+2. **Quote status tracking** - The `quoted` field tells you:
+   - 0 = unquoted
+   - 1 = single quoted (block expansion)
+   - 2 = double quoted (allow expansion)
+
+3. **AST is not expanded** - Parser creates AST with raw `$VAR` strings. Expander modifies AST in-place.
+
+4. **Memory ownership** - When you call `args_add()`, it duplicates the string. When you call `token_new()`, it duplicates the value. Always free accordingly.
+
+5. **Validation is separate** - Parser validates syntax BEFORE building AST, so you can assume AST structure is valid.
+
+---
+
+## 🚀 Next Steps
+
+
+1. Create the expander
+
+2. **Test expander thoroughly**
+
+3. **Move to executor** - This is the final major component
+
+---
+
+## 📚 Useful Commands for Context
+
+```bash
+# View all function prototypes
+grep -n "^[a-z_]*\s*(" *.c
+
+# Count lines per file
+wc -l *.c
+
+# Find all TODO comments
+grep -rn "TODO" .
+
+# Check Norm compliance
+norminette *.c *.h
+```
+
+---
+
+## 🔗 Related Documentation
+
+- Subject: `en.subject.pdf` - Original minishell requirements
+- Norm: 42 Norm - coding standards
+- Tests: Comprehensive test suites in test_*_main.c files
+
+---
+
+## ❓ Questions to Ask When Resuming
+
+1. Has the expander been completed?
+2. Are there any new bugs or issues discovered?
+3. Has the executor been started?
+4. Any changes to the AST structure?
+5. Are all tests still passing?
+
+---
+
+## 🎯 Success Criteria
+
+### Lexer ✅
+- [x] Tokenizes all operators
+- [x] Handles quotes correctly
+- [x] Creates TOKEN_EOF
+- [x] All 119 tests pass
+
+### Parser ✅
+- [x] Builds correct AST structure
+- [x] Validates syntax
+- [x] Handles pipes (left-associative)
+- [x] All 50+ tests pass
+
+### Expander 🔨
+- [ ] Expands environment variables
+- [ ] Handles `$?` correctly
+- [ ] Respects quote types
+- [ ] All expander tests pass
+
+### Executor ⏳
+- [ ] Executes simple commands
+- [ ] Handles pipes
+- [ ] Handles redirections
+- [ ] Implements built-ins
+
+---
+
+**END OF CONTEXT DOCUMENT**
+
+
+here  I will paste all relevant functions and file
+
+lexer.c
+#include "includes/minishell.h"
+
+int	create_word_token(t_token **tokens, char *word, int quote_state)
+{
+	t_token_type	type;
+
+	type = TOKEN_WORD;
+	if (word && ft_strchr(word, '$') && quote_state != 1)
+		type = TOKEN_VAR;
+
+	token_lstadd_back(tokens, token_new(type, word, quote_state != 0));
+	return (1);
+}
+
+int	handle_word(t_token **tokens, char *input, int *i, int quote_state)
+{
+	int		start;
+	char	quote_char;
+	char	*word;
+	int		len;
+	start = *i;
+	quote_char = (quote_state == 1 ? '\'' : '"');
+	if (advance_word_pos(input, i, quote_state, quote_char) == 0)
+		return (0);
+	len = *i - start;
+	if (quote_state != 0)
+		(*i)++;
+	if (len == 0)
+	{
+		if (quote_state == 0)
+			return (1);
+		word = ft_strdup("");
+		if (!word)
+			return (0);
+	}
+	else
+	{
+		word = ft_substr(input, start, len);
+		if (!word)
+			return (0);
+	}
+	int ret = create_word_token(tokens, word, quote_state);
+	free(word); 
+	return (ret);
+}
+
+int	process_quote_open(t_token **tokens, char *input, int *i, int *quote_state)
+{
+	char	open_quote;
+
+	open_quote = input[*i];
+	if (open_quote == '\'')
+		*quote_state = 1;
+	else
+		*quote_state = 2;
+	(*i)++;
+	return (handle_word(tokens, input, i, *quote_state));
+}
+
+int	lexer_loop(t_token **tokens, char *input, int *i, int *quote_state)
+{
+	skip_whitespace(input, i);
+	if (!input[*i])
+		return (0);
+	if (*quote_state == 0 && (input[*i] == '\'' || input[*i] == '"'))
+	{
+		if (process_quote_open(tokens, input, i, quote_state) == 0)
+			return (0);
+		*quote_state = 0;
+		return (1);
+	}
+	if (*quote_state == 0 && handle_operators(tokens, input, i))
+		return (1);
+	if (handle_word(tokens, input, i, *quote_state) == 0)
+		return (0);
+	*quote_state = 0;
+	return (1);
+}
+
+t_token	*lexer(char *input)
+{
+	t_token	*tokens;
+	int		i;
+	int		quote_state;
+
+	tokens = NULL;
+	i = 0;
+	quote_state = 0;
+	if (!input)
+		return (NULL);
+	while (input[i])
+	{
+		if (lexer_loop(&tokens, input, &i, &quote_state) == 0)
+			break ;
+	}
+	if (quote_state != 0)
+	{
+		char	quote_str[2];
+		char	*err_prefix;
+		char	*err_full;
+
+		quote_str[0] = (quote_state == 1 ? '\'' : '"');
+		quote_str[1] = '\0';
+		err_prefix = ft_strjoin("minishell: syntax error: unexpected EOF while looking for matching `", quote_str);
+		err_full = ft_strjoin(err_prefix, "`");
+		free(err_prefix);
+		ft_putstr_fd(err_full, 2);
+		ft_putstr_fd("\n", 2);
+		free(err_full);
+		token_lstclear(&tokens);
+		return (NULL);
+	}
+	token_lstadd_back(&tokens, token_new(TOKEN_EOF, NULL, 0));
+	return (tokens);
+}
+
+lexer_token_utils.c
+
+#include "includes/minishell.h"
+
+t_token	*token_new(t_token_type type, char *value, int quoted)
+{
+	t_token	*token;
+
+	token = malloc(sizeof(t_token));
+	if (!token)
+		return (NULL);
+	token->type = type;
+	token->quoted = quoted;
+	token->next = NULL;
+	if (value)
+	{
+		token->value = ft_strdup(value);
+		if (!token->value)
+		{
+			free(token);
+			return (NULL);
+		}
+	}
+	else
+		token->value = NULL;
+	return (token);
+}
+
+void	token_del(t_token *token)
+{
+	if (!token)
+		return ;
+	if (token->value)
+		free(token->value);
+	free(token);
+}
+
+void	token_lstclear(t_token **head)
+{
+	t_token	*tmp;
+
+	while (*head)
+	{
+		tmp = (*head)->next;
+		token_del(*head);
+		*head = tmp;
+	}
+}
+
+void	token_lstadd_back(t_token **head, t_token *new)
+{
+	t_token	*tmp;
+
+	if (!new)
+		return ;
+	if (!*head)
+	{
+		*head = new;
+		return ;
+	}
+	tmp = *head;
+	while (tmp->next)
+		tmp = tmp->next;
+	tmp->next = new;
+}
+
+void	token_print(t_token *token)
+{
+	const char	*type_str[8];
+
+	type_str[TOKEN_EOF] = "EOF";
+	type_str[TOKEN_WORD] = "WORD";
+	type_str[TOKEN_VAR] = "VAR";
+	type_str[TOKEN_PIPE] = "PIPE";
+	type_str[TOKEN_REDIR_IN] = "REDIR_IN";
+	type_str[TOKEN_REDIR_OUT] = "REDIR_OUT";
+	type_str[TOKEN_REDIR_APPEND] = "REDIR_APPEND";
+	type_str[TOKEN_HEREDOC] = "HEREDOC";
+	if (!token)
+		return ;
+	ft_printf("[%s: '%s' quoted=%d] -> ", type_str[token->type],
+		token->value ? token->value : "NULL", token->quoted);
+	if (token->next)
+		token_print(token->next);
+	else
+		ft_printf("NULL\n");
+}
+
+lexer_utils.c
+
+#include "includes/minishell.h"
+
+int	handle_pipe(t_token **tokens, int *i)
+{
+	char	*op_value;
+
+	op_value = ft_strdup("|");
+	if (!op_value)
+		return (0);
+	token_lstadd_back(tokens, token_new(TOKEN_PIPE, op_value, 0));
+	(*i)++;
+	return (1);
+}
+
+int	handle_less(t_token **tokens, char *input, int *i)
+{
+	char	*op_value;
+
+	if (input[*i + 1] == '<')
+	{
+		op_value = ft_strdup("<<");
+		if (!op_value)
+			return (0);
+		token_lstadd_back(tokens, token_new(TOKEN_HEREDOC, op_value, 0));
+		(*i) += 2;
+	}
+	else
+	{
+		op_value = ft_strdup("<");
+		if (!op_value)
+			return (0);
+		token_lstadd_back(tokens, token_new(TOKEN_REDIR_IN, op_value, 0));
+		(*i)++;
+	}
+	return (1);
+}
+
+int	handle_greater(t_token **tokens, char *input, int *i)
+{
+	char	*op_value;
+
+	if (input[*i + 1] == '>')
+	{
+		op_value = ft_strdup(">>");
+		if (!op_value)
+			return (0);
+		token_lstadd_back(tokens, token_new(TOKEN_REDIR_APPEND, op_value, 0));
+		(*i) += 2;
+	}
+	else
+	{
+		op_value = ft_strdup(">");
+		if (!op_value)
+			return (0);
+		token_lstadd_back(tokens, token_new(TOKEN_REDIR_OUT, op_value, 0));
+		(*i)++;
+	}
+	return (1);
+}
+
+int	handle_operators(t_token **tokens, char *input, int *i)
+{
+	if (input[*i] == '|')
+		return (handle_pipe(tokens, i));
+	if (input[*i] == '<')
+		return (handle_less(tokens, input, i));
+	if (input[*i] == '>')
+		return (handle_greater(tokens, input, i));
+	return (0);
+}
+
+int	advance_word_pos(char *input, int *i, int quote_state, char quote_char)
+{
+	while (input[*i] && (quote_state != 0
+			|| (!ft_isspace((unsigned char)input[*i]) && !ft_isoperator
+				(input[*i]) && input[*i] != '\'' && input[*i] != '"')))
+	{
+		if (quote_state != 0 && input[*i] == quote_char)
+			return (1);
+		(*i)++;
+	}
+	if (quote_state != 0)
+		return (0);
+	return (1);
+}
+
+lexer_utils2.c
+
+#include "includes/minishell.h"
+
+int	ft_isoperator(char c)
+{
+	return (c == '|' || c == '<' || c == '>');
+}
+
+void	skip_whitespace(char *input, int *i)
+{
+	while (input[*i] && ft_isspace((unsigned char)input[*i]))
+		(*i)++;
+}
+
+parser.c
+
+#include "includes/minishell.h"
+/**
+ * parse_command - Parses a simple command
+ * @parser: Parser context
+ * 
+ * Parses a single command with its arguments and redirections.
+ * Continues until it hits a pipe, EOF, or NULL.
+ * 
+ * Example: "cat < in.txt file1 file2 > out.txt"
+ * Result: NODE_COMMAND with args=["cat","file1","file2"] 
+ *         and redirects=[<in.txt, >out.txt]
+ * 
+ * Returns: AST node representing the command, or NULL on failure
+ */
+t_ast_node	*parse_command(t_parser *parser)
+{
+	t_ast_node	*cmd;
+
+	cmd = ast_new_node(NODE_COMMAND);
+	if (!cmd)
+		return (NULL);
+	while (!is_command_end(parser))
+	{
+		if (!process_token(parser, cmd))
+		{
+			ast_free(cmd);
+			return (NULL);
+		}
+	}
+	return (cmd);
+}
+/**
+ * parse_pipeline - Parses a pipeline of commands
+ * @parser: Parser context
+ * 
+ * Parses commands connected by pipes.
+ * Uses left-associativity: "a | b | c" becomes "((a | b) | c)"
+ * 
+ * Algorithm:
+ * 1. Parse first command (left side)
+ * 2. While seeing pipes:
+ *    a. Consume pipe token
+ *    b. Parse next command (right side)
+ *    c. Create pipe node linking left and right
+ *    d. Set pipe node as new left (for next iteration)
+ * 3. Return the final left node (root of pipeline tree)
+ * 
+ * Example: "cat | grep | wc"
+ * Result:      PIPE
+ *             /    \
+ *          PIPE    wc
+ *         /    \
+ *       cat   grep
+ * 
+ * Returns: AST node representing the pipeline, or NULL on failure
+ */
+
+t_ast_node	*parse_pipeline(t_parser *parser)
+{
+	t_ast_node	*left;
+	t_ast_node	*right;
+
+	left = parse_command(parser);
+	if (!left)
+		return (NULL);
+	while (parser->current && parser->current->type == TOKEN_PIPE)
+	{
+		next_token(parser);
+		right = parse_command(parser);
+		if (!right)
+		{
+			ast_free(left);
+			return (NULL);
+		}
+		left = create_pipe_node(left, right);
+		if (!left)
+			return (NULL);
+	}
+	return (left);
+}
+
+/**
+ * print_parser_error - Prints parser error message to stderr
+ * @parser: Parser context with error information
+ * 
+ * Prints the error message stored in the parser, then frees it.
+ */
+void	print_parser_error(t_parser *parser)
+{
+	if (parser->error_msg)
+	{
+		ft_putstr_fd("minishell: ", 2);
+		ft_putstr_fd(parser->error_msg, 2);
+		ft_putstr_fd("\n", 2);
+		free(parser->error_msg);
+		parser->error_msg = NULL;
+	}
+}
+
+/**
+ * parser_init - Initializes parser context
+ * @parser: Parser struct to initialize
+ * @tokens: Token list to parse
+ * 
+ * Sets up the parser with the token list and initializes error tracking.
+ * The current pointer starts at the first token.
+ */
+void	parser_init(t_parser *parser, t_token *tokens)
+{
+	parser->tokens = tokens;
+	parser->current = tokens;
+	parser->error = 0;
+	parser->error_msg = NULL;
+}
+
+/**
+ * parse - Main parser entry point
+ * @tokens: Token list from lexer
+ * 
+ * Converts a token list into an Abstract Syntax Tree (AST).
+ * 
+ * Process:
+ * 1. Validate syntax (check for basic errors)
+ * 2. Initialize parser context
+ * 3. Parse the pipeline (builds AST)
+ * 4. Check for parser errors
+ * 5. Return AST or NULL on error
+ * 
+ * The returned AST represents the structure of the command line:
+ * - Simple command: NODE_COMMAND with args and redirects
+ * - Pipeline: NODE_PIPE with left and right children
+ * 
+ * Example input: "cat < in | grep test > out"
+ * Example output:
+ *           PIPE
+ *          /    \
+ *    COMMAND    COMMAND
+ *    cat<in     grep>out
+ * 
+ * Returns: Root of AST, or NULL on syntax/parse error
+ */
+
+t_ast_node	*parse(t_token *tokens)
+{
+	t_parser	parser;
+	t_ast_node	*ast;
+
+	if (!validate_syntax(tokens))
+		return (NULL);
+	parser_init(&parser, tokens);
+	ast = parse_pipeline(&parser);
+	if (parser.error)
+	{
+		print_parser_error(&parser);
+		ast_free(ast);
+		return (NULL);
+	}
+	return (ast);
+}
+
+parser_utils.c
+
+#include "includes/minishell.h"
+
+/**
+ * parse_single_redir - Parses a single redirection
+ * @parser: Parser context
+ * 
+ * Parses one redirection operator and its filename.
+ * Format: < filename  or  > filename  or  << delimiter  or  >> filename
+ * 
+ * The function:
+ * 1. Saves the redirection type (< > << >>)
+ * 2. Advances past the operator
+ * 3. Gets the filename from next token
+ * 4. Creates a redirection node
+ * 5. Advances past the filename
+ * 
+ * Returns: Redirection node, or NULL on failure
+ */
+t_redir_node	*parse_single_redir(t_parser *parser)
+{
+	t_node_type		redir_type;
+	t_redir_node	*redir;
+
+	redir_type = token_to_node_type(parser->current->type);
+	next_token(parser);
+	if (!parser->current || parser->current->type == TOKEN_EOF)
+	{
+		parser_error(parser, "unexpected token after redirection");
+		return (NULL);
+	}
+	redir = redir_new_node(redir_type, parser->current->value);
+	if (!redir)
+	{
+		parser_error(parser, "memory allocation failed");
+		return (NULL);
+	}
+	next_token(parser);
+	return (redir);
+}
+
+/**
+ * handle_redirection - Parses and adds a redirection to command
+ * @parser: Parser context
+ * @cmd: Command node to add redirection to
+ * 
+ * Delegates to parse_single_redir() to parse the redirection,
+ * then adds it to the command's redirection list.
+ * 
+ * Returns: 1 on success, 0 on failure
+ */
+int	handle_redirection(t_parser *parser, t_ast_node *cmd)
+{
+	t_redir_node	*redir;
+
+	redir = parse_single_redir(parser);
+	if (!redir)
+		return (0);
+	redir_add_back(&cmd->redirects, redir);
+	return (1);
+}
+
+/**
+ * handle_argument - Adds a word/variable to command arguments
+ * @parser: Parser context
+ * @cmd: Command node to add argument to
+ * 
+ * Takes the current token's value and appends it to the command's
+ * argument array, then advances to the next token.
+ * 
+ * Returns: 1 on success, 0 on failure
+ */
+int	handle_argument(t_parser *parser, t_ast_node *cmd)
+{
+	cmd->args = args_add(cmd->args, parser->current->value);
+	if (!cmd->args)
+		return (0);
+	next_token(parser);
+	return (1);
+}
+
+/**
+ * is_command_end - Checks if we've reached the end of a command
+ * @parser: Parser context
+ * 
+ * A command ends when we encounter:
+ * - NULL (end of token list)
+ * - TOKEN_PIPE (command separator)
+ * - TOKEN_EOF (end of input)
+ * 
+ * Returns: 1 if at end, 0 otherwise
+ */
+int	is_command_end(t_parser *parser)
+{
+	if (!parser->current)
+		return (1);
+	if (parser->current->type == TOKEN_PIPE)
+		return (1);
+	if (parser->current->type == TOKEN_EOF)
+		return (1);
+	return (0);
+}
+
+/**
+ * process_token - Processes a single token in command parsing
+ * @parser: Parser context
+ * @cmd: Command node being built
+ * 
+ * Routes the current token to the appropriate handler based on type:
+ * - Redirections (< > << >>) → handle_redirection()
+ * - Words and variables → handle_argument()
+ * - Other tokens → error
+ * 
+ * Returns: 1 on success, 0 on failure
+ */
+int	process_token(t_parser *parser, t_ast_node *cmd)
+{
+	if (is_redir_token(parser->current->type))
+		return (handle_redirection(parser, cmd));
+	else if (parser->current->type == TOKEN_WORD
+		|| parser->current->type == TOKEN_VAR)
+		return (handle_argument(parser, cmd));
+	return (0);
+}
+
+parser_utils2.c
+
+#include "includes/minishell.h"
+
+/**
+ * peek_token - Returns current token without advancing
+ * @parser: Parser context
+ * 
+ * Allows looking at the current token without consuming it.
+ * 
+ * Returns: Pointer to current token, or NULL if at end
+ */
+t_token	*peek_token(t_parser *parser)
+{
+	return (parser->current);
+}
+
+/**
+ * next_token - Advances to next token
+ * @parser: Parser context
+ * 
+ * Moves the current pointer to the next token in the list.
+ * Safe to call even if current is NULL.
+ * 
+ * Returns: Pointer to new current token, or NULL if at end
+ */
+t_token	*next_token(t_parser *parser)
+{
+	if (parser->current)
+		parser->current = parser->current->next;
+	return (parser->current);
+}
+
+/**
+ * match_token - Checks if current token matches a type
+ * @parser: Parser context
+ * @type: Token type to check for
+ * 
+ * Compares the current token's type with the expected type.
+ * 
+ * Returns: 1 if match, 0 otherwise
+ */
+int	match_token(t_parser *parser, t_token_type type)
+{
+	if (!parser->current)
+		return (0);
+	return (parser->current->type == type);
+}
+
+/**
+ * parser_error - Sets error state in parser
+ * @parser: Parser context
+ * @msg: Error message to store
+ * 
+ * Marks the parser as having an error and stores the message.
+ * The message is duplicated, so caller can free original.
+ */
+void	parser_error(t_parser *parser, char *msg)
+{
+	parser->error = 1;
+	if (msg)
+		parser->error_msg = ft_strdup(msg);
+	else
+		parser->error_msg = NULL;
+}
+
+/**
+ * create_pipe_node - Creates a pipe node linking two commands
+ * @left: Left side command
+ * @right: Right side command
+ * 
+ * Creates a NODE_PIPE node and sets its children.
+ * If allocation fails, frees both children to prevent memory leaks.
+ * 
+ * Returns: Pipe node, or NULL on failure
+ */
+t_ast_node	*create_pipe_node(t_ast_node *left, t_ast_node *right)
+{
+	t_ast_node	*pipe_node;
+
+	pipe_node = ast_new_node(NODE_PIPE);
+	if (!pipe_node)
+	{
+		ast_free(left);
+		ast_free(right);
+		return (NULL);
+	}
+	pipe_node->left = left;
+	pipe_node->right = right;
+	return (pipe_node);
+}
+
+
+parser_syntax.c
+
+#include "includes/minishell.h"
+
+int	validate_redirects(t_token *tokens)
+{
+	t_token	*current;
+
+	current = tokens;
+	while (current && TOKEN_EOF != current->type)
+	{
+		if (is_redir_token(current->type))
+		{
+			current = current->next;
+			if (TOKEN_EOF == current->type || TOKEN_PIPE == current->type
+				|| is_redir_token(current->type))
+			{
+				ft_putstr_fd
+					("minishell: syntax error near unexpected token'\n", 2);
+				return (0);
+			}
+			continue ;
+		}
+		current = current->next;
+	}
+	return (1);
+}
+
+int	validate_pipes(t_token *tokens)
+{
+	t_token	*current;
+
+	current = tokens;
+	if (TOKEN_PIPE == current->type)
+	{
+		ft_putstr_fd("minishell: syntax error near unexpected token `|'\n", 2);
+		return (0);
+	}
+	while (current && current->type != TOKEN_EOF)
+	{
+		if (TOKEN_PIPE == current->type)
+		{
+			current = current->next;
+			if (TOKEN_EOF == current->type || TOKEN_PIPE == current->type)
+			{
+				ft_putstr_fd
+					("minishell: syntax error near unexpected token `|'\n", 2);
+				return (0);
+			}
+			continue ;
+		}
+		current = current->next;
+	}
+	return (1);
+}
+
+int	validate_syntax(t_token *tokens)
+{
+	if (!tokens)
+		return (0);
+	if (TOKEN_EOF == tokens->type)
+		return (1);
+	if (!validate_pipes(tokens))
+		return (0);
+	if (!validate_redirects(tokens))
+		return (0);
+	return (1);
+}
+
