@@ -21,6 +21,7 @@ t_ast_node	*ast_new_node(t_node_type type)
 		return (NULL);
 	node->type = type;
 	node->args = NULL;
+	node->args_quoted = NULL;
 	node->redirects = NULL;
 	node->left = NULL;
 	node->right = NULL;
@@ -36,24 +37,24 @@ t_ast_node	*ast_new_node(t_node_type type)
  * 
  * Returns: Pointer to new redirection node, or NULL on failure
  */
-t_redir_node	*redir_new_node(t_node_type type, char *file)
-{
-	t_redir_node	*redir;
 
-	if (!file)
-		return (NULL);
-	redir = (t_redir_node *)malloc(sizeof(t_redir_node));
-	if (!redir)
-		return (NULL);
-	redir->type = type;
-	redir->file = ft_strdup(file);
-	if (!redir->file)
-	{
-		free(redir);
-		return (NULL);
-	}
-	redir->next = NULL;
-	return (redir);
+t_redir_node *redir_new_node(t_node_type type, char *file, int quoted)
+{
+    t_redir_node *node;
+    
+    node = malloc(sizeof(t_redir_node));
+    if (!node)
+        return (NULL);
+    node->type = type;
+    node->file = ft_strdup(file);
+    node->quoted = quoted;  // 🆕 Store quote info
+    if (!node->file)
+    {
+        free(node);
+        return (NULL);
+    }
+    node->next = NULL;
+    return (node);
 }
 
 /* ************************************************************************** */
@@ -101,6 +102,23 @@ void	redir_free(t_redir_node *redir)
 	}
 }
 
+void	redir_lstclear(t_redir_node **head)
+{
+	t_redir_node	*current;
+	t_redir_node	*next;
+
+	if (!head || !*head)
+		return ;
+	current = *head;
+	while (current)
+	{
+		next = current->next;
+		free(current->file);
+		free(current);
+		current = next;
+	}
+	*head = NULL;
+}
 /**
  * ast_free - Recursively frees an entire AST
  * @node: Root node of the AST to free
@@ -108,17 +126,29 @@ void	redir_free(t_redir_node *redir)
  * Uses post-order traversal (children first, then parent) to free all nodes.
  * This ensures we don't access freed memory when following pointers.
  */
-void	ast_free(t_ast_node *node)
+void ast_free(t_ast_node *node)
 {
-	if (!node)
-		return ;
-	ast_free(node->left);
-	ast_free(node->right);
-	redir_free(node->redirects);
-	free_args(node->args);
-	free(node);
+    if (!node)
+        return;
+    
+    // Free args array and quote array
+    if (node->args)
+    {
+        for (int i = 0; node->args[i]; i++)
+            free(node->args[i]);
+        free(node->args);
+    }
+    free(node->args_quoted);  // 🆕 Free quote array
+    
+    // Free redirects
+    redir_lstclear(&node->redirects);
+    
+    // Recursively free children
+    ast_free(node->left);
+    ast_free(node->right);
+    
+    free(node);
 }
-
 /* ************************************************************************** */
 /*                         REDIRECTION UTILITIES                              */
 /* ************************************************************************** */
@@ -199,35 +229,35 @@ int	args_count(char **args)
  * 
  * Returns: New args array, or NULL on failure
  */
-char	**args_add(char **args, char *new_arg)
+char **args_add(char **args, int **args_quoted, char *new_arg, int quoted)
 {
-	char	**new_args;
-	int		count;
-	int		i;
+    int     len;
+    char    **new_args;
+    int     *new_quoted;
+    int     i;
 
-	if (!new_arg)
-		return (args);
-	count = args_count(args);
-	new_args = (char **)malloc(sizeof(char *) * (count + 2));
-	if (!new_args)
-		return (NULL);
-	i = 0;
-	while (i < count)
-	{
-		new_args[i] = args[i];
-		i++;
-	}
-	new_args[i] = ft_strdup(new_arg);
-	if (!new_args[i])
-	{
-		free(new_args);
-		return (NULL);
-	}
-	new_args[i + 1] = NULL;
-	free(args);
-	return (new_args);
+    len = 0;
+    while (args && args[len])
+        len++;
+    new_args = malloc(sizeof(char *) * (len + 2));
+    new_quoted = malloc(sizeof(int) * (len + 2));
+    if (!new_args || !new_quoted)
+        return (free(new_args), free(new_quoted), NULL);
+    i = -1;
+    while (++i < len)
+    {
+        new_args[i] = args[i];
+        new_quoted[i] = (*args_quoted)[i];
+    }
+    new_args[len] = ft_strdup(new_arg);
+    new_quoted[len] = quoted;
+    new_args[len + 1] = NULL;
+    new_quoted[len + 1] = 0;
+    free(args);
+    free(*args_quoted);
+    *args_quoted = new_quoted;
+    return (new_args);
 }
-
 /**
  * args_dup - Duplicates an entire args array
  * @args: Array to duplicate
@@ -271,55 +301,76 @@ char	**args_dup(char **args)
  * print_indent - Prints indentation for tree visualization
  * @depth: Number of indentation levels
  */
-void	print_indent(int depth)
-{
-	int	i;
 
-	i = 0;
-	while (i < depth)
-	{
-		ft_printf("  ");
-		i++;
-	}
+void print_indent(int depth)
+{
+    int i;
+
+    i = 0;
+    while (i < depth)
+    {
+        ft_printf("  ");  // Two spaces per depth level
+        i++;
+    }
 }
 
 /**
  * print_node_type - Prints the type of an AST node
  * @type: Node type to print
  */
-void	print_node_type(t_node_type type)
+void print_node_type(t_node_type type)
 {
-	if (type == NODE_COMMAND)
-		ft_printf("NODE_COMMAND");
-	else if (type == NODE_PIPE)
-		ft_printf("NODE_PIPE");
-	else if (type == NODE_REDIR_IN)
-		ft_printf("NODE_REDIR_IN");
-	else if (type == NODE_REDIR_OUT)
-		ft_printf("NODE_REDIR_OUT");
-	else if (type == NODE_REDIR_APPEND)
-		ft_printf("NODE_REDIR_APPEND");
-	else if (type == NODE_HEREDOC)
-		ft_printf("NODE_HEREDOC");
+    if (type == NODE_COMMAND)
+        ft_printf("COMMAND");
+    else if (type == NODE_PIPE)
+        ft_printf("PIPE");
+    else if (type == NODE_REDIR_IN)
+        ft_printf("REDIR_IN");
+    else if (type == NODE_REDIR_OUT)
+        ft_printf("REDIR_OUT");
+    else if (type == NODE_REDIR_APPEND)
+        ft_printf("REDIR_APPEND");
+    else if (type == NODE_HEREDOC)
+        ft_printf("HEREDOC");
+    else
+        ft_printf("UNKNOWN");
 }
-
+// Helper to get quoted description
+static const char *get_quoted_desc(int quoted)
+{
+    if (quoted == 1)
+        return "quoted=1 (single quotes)";
+    else if (quoted == 2)
+        return "quoted=2 (double quotes)";
+    else
+        return "quoted=0 (unquoted)";
+}
 /**
  * print_redirects - Prints all redirections for a command
  * @redir: First redirection node
  * @depth: Indentation depth
  */
-void	print_redirects(t_redir_node *redir, int depth)
+void print_redirects(t_redir_node *redir, int depth)
 {
-	while (redir)
-	{
-		print_indent(depth);
-		ft_printf("  Redir: ");
-		print_node_type(redir->type);
-		ft_printf(" -> '%s'\n", redir->file);
-		redir = redir->next;
-	}
-}
+    t_redir_node *current;
 
+    current = redir;
+    print_indent(depth);
+    ft_printf("Redirects:\n");
+    if (!current)
+    {
+        print_indent(depth + 1);
+        ft_printf("(none)\n");
+        return;
+    }
+    while (current)
+    {
+        print_indent(depth + 1);
+        print_node_type(current->type);
+        ft_printf(": '%s' (%s)\n", current->file ? current->file : "NULL", get_quoted_desc(current->quoted));
+        current = current->next;
+    }
+}
 /**
  * ast_print - Prints the AST in a tree format (for debugging)
  * @node: Root of the AST to print
@@ -328,43 +379,51 @@ void	print_redirects(t_redir_node *redir, int depth)
  * Recursively prints the AST structure with indentation showing depth.
  * Shows node types, arguments, and redirections.
  */
-void	ast_print(t_ast_node *node, int depth)
-{
-	int	i;
 
-	if (!node)
-		return ;
-	print_indent(depth);
-	print_node_type(node->type);
-	ft_printf("\n");
-	if (node->args)
-	{
-		print_indent(depth);
-		ft_printf("  Args: [");
-		i = 0;
-		while (node->args[i])
-		{
-			ft_printf("'%s'", node->args[i]);
-			if (node->args[i + 1])
-				ft_printf(", ");
-			i++;
-		}
-		ft_printf("]\n");
-	}
-	if (node->redirects)
-		print_redirects(node->redirects, depth);
-	if (node->left)
-	{
-		print_indent(depth);
-		ft_printf("  Left:\n");
-		ast_print(node->left, depth + 2);
-	}
-	if (node->right)
-	{
-		print_indent(depth);
-		ft_printf("  Right:\n");
-		ast_print(node->right, depth + 2);
-	}
+// Main AST print function (recursive)
+void ast_print(t_ast_node *node, int depth)
+{
+    int i;
+
+    if (!node)
+    {
+        print_indent(depth);
+        ft_printf("NULL\n");
+        return;
+    }
+    print_indent(depth);
+    print_node_type(node->type);
+    ft_printf(":\n");
+    if (node->type == NODE_COMMAND)
+    {
+        print_indent(depth + 1);
+        ft_printf("Args:\n");
+        if (!node->args)
+        {
+            print_indent(depth + 2);
+            ft_printf("(none)\n");
+        }
+        else
+        {
+            i = 0;
+            while (node->args[i])
+            {
+                print_indent(depth + 2);
+                ft_printf("'%s' (%s)\n", node->args[i], get_quoted_desc(node->args_quoted ? node->args_quoted[i] : 0));
+                i++;
+            }
+        }
+        print_redirects(node->redirects, depth + 1);
+    }
+    else if (node->type == NODE_PIPE)
+    {
+        print_indent(depth + 1);
+        ft_printf("Left:\n");
+        ast_print(node->left, depth + 2);
+        print_indent(depth + 1);
+        ft_printf("Right:\n");
+        ast_print(node->right, depth + 2);
+    }
 }
 
 /* ************************************************************************** */

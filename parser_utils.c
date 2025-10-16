@@ -16,28 +16,29 @@
  * 
  * Returns: Redirection node, or NULL on failure
  */
-t_redir_node	*parse_single_redir(t_parser *parser)
+t_redir_node *parse_single_redir(t_parser *parser)
 {
-	t_node_type		redir_type;
-	t_redir_node	*redir;
+    t_node_type     redir_type;
+    t_redir_node    *redir;
+    int             quoted;
 
-	redir_type = token_to_node_type(parser->current->type);
-	next_token(parser);
-	if (!parser->current || parser->current->type == TOKEN_EOF)
-	{
-		parser_error(parser, "unexpected token after redirection");
-		return (NULL);
-	}
-	redir = redir_new_node(redir_type, parser->current->value);
-	if (!redir)
-	{
-		parser_error(parser, "memory allocation failed");
-		return (NULL);
-	}
-	next_token(parser);
-	return (redir);
+    redir_type = token_to_node_type(parser->current->type);
+    next_token(parser);
+    if (!parser->current || parser->current->type == TOKEN_EOF)
+    {
+        parser_error(parser, "unexpected token after redirection");
+        return (NULL);
+    }
+    quoted = parser->current->quoted;  // 🆕 ADD THIS LINE
+    redir = redir_new_node(redir_type, parser->current->value, quoted);  // 🆕 UPDATE THIS
+    if (!redir)
+    {
+        parser_error(parser, "memory allocation failed");
+        return (NULL);
+    }
+    next_token(parser);
+    return (redir);
 }
-
 /**
  * handle_redirection - Parses and adds a redirection to command
  * @parser: Parser context
@@ -69,15 +70,16 @@ int	handle_redirection(t_parser *parser, t_ast_node *cmd)
  * 
  * Returns: 1 on success, 0 on failure
  */
-int	handle_argument(t_parser *parser, t_ast_node *cmd)
+int handle_argument(t_parser *parser, t_ast_node *cmd)
 {
-	cmd->args = args_add(cmd->args, parser->current->value);
-	if (!cmd->args)
-		return (0);
-	next_token(parser);
-	return (1);
+    cmd->args = args_add(cmd->args, &cmd->args_quoted,
+                         parser->current->value,
+                         parser->current->quoted);  // 🆕 UPDATE THIS LINE
+    if (!cmd->args)
+        return (0);
+    next_token(parser);
+    return (1);
 }
-
 /**
  * is_command_end - Checks if we've reached the end of a command
  * @parser: Parser context

@@ -57,6 +57,7 @@ typedef struct s_redir_node
 {
 	t_node_type			type;       // REDIR_IN, REDIR_OUT, REDIR_APPEND, HEREDOC
 	char				*file;      // Filename or heredoc delimiter (unexpanded)
+	int				quoted;
 	struct s_redir_node	*next;      // Next redirection in the list
 }	t_redir_node;
 
@@ -68,6 +69,7 @@ typedef struct s_ast_node
 {
 	t_node_type			type;       // Type of this node
 	char				**args;     // Command arguments (NULL-terminated array)
+	int				*args_quoted;
 	t_redir_node		*redirects; // List of redirections for this command
 	struct s_ast_node	*left;      // Left child (for pipes: left command)
 	struct s_ast_node	*right;     // Right child (for pipes: right command)
@@ -181,14 +183,14 @@ int	validate_redirects(t_token *tokens);
 //			parse_node_utils.c		//
 
 t_ast_node	*ast_new_node(t_node_type type);
-t_redir_node	*redir_new_node(t_node_type type, char *file);
+t_redir_node *redir_new_node(t_node_type type, char *file, int quoted);
 void	free_args(char **args);
 void	redir_free(t_redir_node *redir);
 void	ast_free(t_ast_node *node);
 void	redir_add_back(t_redir_node **redir_list, t_redir_node *new_redir);
 int	redir_count(t_redir_node *redir);
 int	args_count(char **args);
-char	**args_add(char **args, char *new_arg);
+char **args_add(char **args, int **args_quoted, char *new_arg, int quoted);
 char	**args_dup(char **args);
 void	print_indent(int depth);
 void	print_node_type(t_node_type type);
@@ -200,6 +202,15 @@ t_node_type	token_to_node_type(t_token_type token_type);
 int	ast_has_pipes(t_ast_node *node);
 int	ast_count_pipes(t_ast_node *node);
 int	ast_count_commands(t_ast_node *node);
+void	redir_lstclear(t_redir_node **head);
+
+//			expander			//
+// Expander functions
+int		expand_ast(t_ast_node *ast, t_shell *shell);
+char	*expand_string(char *str, int quoted, t_shell *shell);
+char	*get_env_value(char *name, t_shell *shell);
+char	*get_var_name(char *str, int *len);
+char	*ft_charjoin(char *s, char c);
 
 
 

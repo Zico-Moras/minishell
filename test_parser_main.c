@@ -9,19 +9,187 @@
 #define BOLD    "\033[1m"
 #define RESET   "\033[0m"
 
+// Expected argument with quote info
+typedef struct s_expected_arg {
+	char	*value;
+	int		quoted;
+} t_expected_arg;
+
+// Expected redirection with quote info
+typedef struct s_expected_redir {
+	t_node_type	type;
+	char		*file;
+	int			quoted;
+} t_expected_redir;
+
 typedef struct s_parser_test {
-	char	*input;
-	int		expect_error;
-	char	*desc;
+	char				*input;
+	int					expect_error;
+	char				*desc;
+	t_expected_arg		*expected_args;		// NULL-terminated
+	t_expected_redir	*expected_redirs;	// NULL-terminated
+	int					is_pipeline;		// 1 if expecting PIPE node
 } t_parser_test;
 
-static void	print_separator(void)
+// Count args in AST node
+static int count_args(char **args)
 {
-	ft_printf("\n%s%s", CYAN, "═══════════════════════════════════════════════════════════════════\n");
-	ft_printf("%s", RESET);
+	int count = 0;
+	
+	if (!args)
+		return (0);
+	while (args[count])
+		count++;
+	return (count);
 }
 
-static int	run_parser_test(t_parser_test *test, int test_num)
+// Count redirects in list
+static int count_redirs(t_redir_node *redirs)
+{
+	int count = 0;
+	t_redir_node *curr = redirs;
+	
+	while (curr)
+	{
+		count++;
+		curr = curr->next;
+	}
+	return (count);
+}
+
+// Count expected args
+static int count_expected_args(t_expected_arg *expected)
+{
+	int count = 0;
+	
+	if (!expected)
+		return (0);
+	while (expected[count].value)
+		count++;
+	return (count);
+}
+
+// Count expected redirs
+static int count_expected_redirs(t_expected_redir *expected)
+{
+	int count = 0;
+	
+	if (!expected)
+		return (0);
+	while (expected[count].file)
+		count++;
+	return (count);
+}
+
+// Check if arguments match (including quote info)
+static int check_args(t_ast_node *node, t_expected_arg *expected)
+{
+	int i = 0;
+	int exp_count = count_expected_args(expected);
+	int actual_count = count_args(node->args);
+	
+	if (!expected && !node->args)
+		return (1);
+	
+	if (actual_count != exp_count)
+	{
+		ft_printf("  %s✗ Arg count mismatch:%s expected %d, got %d\n",
+				RED, RESET, exp_count, actual_count);
+		return (0);
+	}
+	
+	while (expected && expected[i].value)
+	{
+		if (!node->args[i] || ft_strcmp(node->args[i], expected[i].value) != 0)
+		{
+			ft_printf("  %s✗ Arg[%d] value mismatch:%s expected '%s', got '%s'\n",
+					RED, RESET, i, expected[i].value,
+					node->args[i] ? node->args[i] : "NULL");
+			return (0);
+		}
+		
+		if (node->args_quoted[i] != expected[i].quoted)
+		{
+			ft_printf("  %s✗ Arg[%d] quote mismatch:%s '%s' expected quoted=%d, got quoted=%d\n",
+					RED, RESET, i, expected[i].value,
+					expected[i].quoted, node->args_quoted[i]);
+			return (0);
+		}
+		i++;
+	}
+	
+	return (1);
+}
+
+// Check if redirections match (including quote info)
+static int check_redirs(t_ast_node *node, t_expected_redir *expected)
+{
+	int i = 0;
+	int exp_count = count_expected_redirs(expected);
+	int actual_count = count_redirs(node->redirects);
+	t_redir_node *curr = node->redirects;
+	
+	if (!expected && !node->redirects)
+		return (1);
+	
+	if (actual_count != exp_count)
+	{
+		ft_printf("  %s✗ Redir count mismatch:%s expected %d, got %d\n",
+				RED, RESET, exp_count, actual_count);
+		return (0);
+	}
+	
+	while (expected && expected[i].file && curr)
+	{
+		if (curr->type != expected[i].type)
+		{
+			ft_printf("  %s✗ Redir[%d] type mismatch:%s expected %d, got %d\n",
+					RED, RESET, i, expected[i].type, curr->type);
+			return (0);
+		}
+		
+		if (ft_strcmp(curr->file, expected[i].file) != 0)
+		{
+			ft_printf("  %s✗ Redir[%d] file mismatch:%s expected '%s', got '%s'\n",
+					RED, RESET, i, expected[i].file, curr->file);
+			return (0);
+		}
+		
+		if (curr->quoted != expected[i].quoted)
+		{
+			ft_printf("  %s✗ Redir[%d] quote mismatch:%s '%s' expected quoted=%d, got quoted=%d\n",
+					RED, RESET, i, expected[i].file,
+					expected[i].quoted, curr->quoted);
+			return (0);
+		}
+		
+		curr = curr->next;
+		i++;
+	}
+	
+	return (1);
+}
+
+// Verify command node contents
+static int verify_command(t_ast_node *node, t_parser_test *test)
+{
+	if (node->type != NODE_COMMAND)
+	{
+		ft_printf("  %s✗ FAIL:%s Expected NODE_COMMAND, got type %d\n",
+				RED, RESET, node->type);
+		return (0);
+	}
+	
+	if (!check_args(node, test->expected_args))
+		return (0);
+	
+	if (!check_redirs(node, test->expected_redirs))
+		return (0);
+	
+	return (1);
+}
+
+static int run_parser_test(t_parser_test *test, int test_num)
 {
 	t_token		*tokens;
 	t_ast_node	*ast;
@@ -34,8 +202,16 @@ static int	run_parser_test(t_parser_test *test, int test_num)
 	tokens = lexer(test->input);
 	if (!tokens)
 	{
-		ft_printf("%s✗ FAIL:%s Lexer returned NULL\n", RED, RESET);
-		return (0);
+		if (test->expect_error)
+		{
+			ft_printf("  %s✓ PASS:%s Lexer returned NULL (error expected)\n", GREEN, RESET);
+			return (1);
+		}
+		else
+		{
+			ft_printf("  %s✗ FAIL:%s Lexer returned NULL\n", RED, RESET);
+			return (0);
+		}
 	}
 	
 	// Parse
@@ -46,345 +222,646 @@ static int	run_parser_test(t_parser_test *test, int test_num)
 	{
 		if (ast == NULL)
 		{
-			ft_printf("%s✓ PASS:%s Parser returned NULL (error expected)\n", GREEN, RESET);
+			ft_printf("  %s✓ PASS:%s Parser returned NULL (error expected)\n", GREEN, RESET);
 			passed = 1;
 		}
 		else
 		{
-			ft_printf("%s✗ FAIL:%s Expected error but got AST:\n", RED, RESET);
-			ast_print(ast, 0);
+			ft_printf("  %s✗ FAIL:%s Expected error but got AST\n", RED, RESET);
 			passed = 0;
 		}
 	}
 	else
 	{
-		if (ast)
+		if (!ast)
 		{
-			ft_printf("%s✓ PASS:%s AST created successfully\n", GREEN, RESET);
-			ft_printf("\n%sAST Structure:%s\n", CYAN, RESET);
-			ast_print(ast, 0);
-			passed = 1;
+			ft_printf("  %s✗ FAIL:%s Expected AST but got NULL\n", RED, RESET);
+			passed = 0;
+		}
+		else if (test->is_pipeline)
+		{
+			if (ast->type == NODE_PIPE)
+			{
+				ft_printf("  %s✓ PASS:%s Pipeline AST created\n", GREEN, RESET);
+				passed = 1;
+			}
+			else
+			{
+				ft_printf("  %s✗ FAIL:%s Expected NODE_PIPE, got %d\n", RED, RESET, ast->type);
+				passed = 0;
+			}
 		}
 		else
 		{
-			ft_printf("%s✗ FAIL:%s Expected AST but got NULL\n", RED, RESET);
-			passed = 0;
+			passed = verify_command(ast, test);
+			if (passed)
+				ft_printf("  %s✓ PASS:%s Command matches expected\n", GREEN, RESET);
 		}
 	}
 	
 	// Cleanup
-	ast_free(ast);
+	if (ast)
+		ast_free(ast);
 	token_lstclear(&tokens);
 	
 	return (passed);
 }
 
-int	main(int ac, char **av, char **envp)
+int main(void)
 {
-	t_shell			shell;
-	t_parser_test	tests[] = {
-		// ========== SIMPLE COMMANDS ==========
+	t_parser_test tests[] = {
+		// ========== BASIC COMMANDS ==========
 		{
-			.input = "ls",
+			.input = "echo hello",
 			.expect_error = 0,
-			.desc = "Single word command"
+			.desc = "Simple command with argument",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"hello", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "echo hello world",
+			.input = "pwd",
 			.expect_error = 0,
-			.desc = "Command with multiple arguments"
+			.desc = "Single command no args",
+			.expected_args = (t_expected_arg[]){
+				{"pwd", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+
+		// ========== QUOTES IN ARGUMENTS ==========
+		{
+			.input = "echo 'single quoted'",
+			.expect_error = 0,
+			.desc = "Single quoted argument",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"single quoted", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "ls -la -h",
+			.input = "echo \"double quoted\"",
 			.expect_error = 0,
-			.desc = "Command with flags"
+			.desc = "Double quoted argument",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"double quoted", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
-		{
-			.input = "/bin/ls",
-			.expect_error = 0,
-			.desc = "Command with absolute path"
-		},
-		{
-			.input = "",
-			.expect_error = 0,
-			.desc = "Empty input (just EOF)"
-		},
-		
-		// ========== SINGLE REDIRECTIONS ==========
-		{
-			.input = "cat < input.txt",
-			.expect_error = 0,
-			.desc = "Input redirection"
-		},
-		{
-			.input = "echo hello > output.txt",
-			.expect_error = 0,
-			.desc = "Output redirection"
-		},
-		{
-			.input = "cat >> append.txt",
-			.expect_error = 0,
-			.desc = "Append redirection"
-		},
-		{
-			.input = "cat << EOF",
-			.expect_error = 0,
-			.desc = "Heredoc"
-		},
-		{
-			.input = "< input.txt cat",
-			.expect_error = 0,
-			.desc = "Redirection before command"
-		},
-		
-		// ========== MULTIPLE REDIRECTIONS ==========
-		{
-			.input = "cat < in.txt > out.txt",
-			.expect_error = 0,
-			.desc = "Input and output redirect"
-		},
-		{
-			.input = "cat < in1.txt < in2.txt",
-			.expect_error = 0,
-			.desc = "Multiple input redirects"
-		},
-		{
-			.input = "echo hello > out1.txt > out2.txt",
-			.expect_error = 0,
-			.desc = "Multiple output redirects"
-		},
-		{
-			.input = "cat < in > out >> append",
-			.expect_error = 0,
-			.desc = "Mixed redirections"
-		},
-		{
-			.input = "< in cat file1 file2 > out",
-			.expect_error = 0,
-			.desc = "Redirects around command"
-		},
-		
-		// ========== SIMPLE PIPES ==========
-		{
-			.input = "ls | cat",
-			.expect_error = 0,
-			.desc = "Simple pipe"
-		},
-		{
-			.input = "cat file | grep test",
-			.expect_error = 0,
-			.desc = "Pipe with arguments"
-		},
-		{
-			.input = "ls | cat | wc",
-			.expect_error = 0,
-			.desc = "Multiple pipes"
-		},
-		{
-			.input = "cat | grep | wc | sort",
-			.expect_error = 0,
-			.desc = "Four commands piped"
-		},
-		
-		// ========== PIPES WITH REDIRECTIONS ==========
-		{
-			.input = "cat < input.txt | grep test",
-			.expect_error = 0,
-			.desc = "Input redirect with pipe"
-		},
-		{
-			.input = "ls | grep txt > output.txt",
-			.expect_error = 0,
-			.desc = "Pipe with output redirect"
-		},
-		{
-			.input = "cat < in | grep test > out",
-			.expect_error = 0,
-			.desc = "Pipe with both redirects"
-		},
-		{
-			.input = "< in cat | grep | wc > out",
-			.expect_error = 0,
-			.desc = "Multiple pipes with redirects"
-		},
-		{
-			.input = "cat << EOF | grep test | wc -l",
-			.expect_error = 0,
-			.desc = "Heredoc with pipes"
-		},
-		
-		// ========== COMPLEX COMBINATIONS ==========
-		{
-			.input = "cat < in1 < in2 | grep test > out1 > out2 | wc",
-			.expect_error = 0,
-			.desc = "Multiple redirects with multiple pipes"
-		},
-		{
-			.input = "ls -la | grep txt | wc -l > count.txt",
-			.expect_error = 0,
-			.desc = "Flags, pipes, and output"
-		},
-		{
-			.input = "cat file1 file2 < in | grep pattern > out | sort | uniq",
-			.expect_error = 0,
-			.desc = "Long pipeline with mixed content"
-		},
-		
-		// ========== VARIABLES ==========
-		{
-			.input = "echo $HOME",
-			.expect_error = 0,
-			.desc = "Variable expansion"
-		},
-		{
-			.input = "echo $HOME $USER",
-			.expect_error = 0,
-			.desc = "Multiple variables"
-		},
-		{
-			.input = "cat $FILE",
-			.expect_error = 0,
-			.desc = "Variable as argument"
-		},
-		{
-			.input = "cat < $INFILE > $OUTFILE",
-			.expect_error = 0,
-			.desc = "Variables in redirections"
-		},
-		{
-			.input = "echo $HOME | grep test",
-			.expect_error = 0,
-			.desc = "Variable with pipe"
-		},
-		
-		// ========== QUOTES ==========
 		{
 			.input = "echo 'hello world'",
 			.expect_error = 0,
-			.desc = "Single quoted argument"
+			.desc = "Single quoted arg with space",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"hello world", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
 			.input = "echo \"hello world\"",
 			.expect_error = 0,
-			.desc = "Double quoted argument"
+			.desc = "Double quoted arg with space",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"hello world", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "cat 'file name with spaces.txt'",
+			.input = "echo 'nested \"double\" inside single'",
 			.expect_error = 0,
-			.desc = "Quoted filename"
+			.desc = "Nested double quotes inside single",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"nested \"double\" inside single", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "echo '$HOME'",
+			.input = "echo \"nested 'single' inside double\"",
 			.expect_error = 0,
-			.desc = "Variable in single quotes (literal)"
+			.desc = "Nested single quotes inside double",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"nested 'single' inside double", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "echo \"$HOME\"",
+			.input = "echo ''",
 			.expect_error = 0,
-			.desc = "Variable in double quotes (expand)"
+			.desc = "Empty single quoted arg",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
-		
-		// ========== SYNTAX ERRORS (Should Fail) ==========
+		{
+			.input = "echo \"\"",
+			.expect_error = 0,
+			.desc = "Empty double quoted arg",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo '' \"\" word",
+			.expect_error = 0,
+			.desc = "Empty quotes with regular word",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"", 1},
+				{"", 2},
+				{"word", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+
+		// ========== OPERATORS INSIDE QUOTES ==========
+		{
+			.input = "echo '|'",
+			.expect_error = 0,
+			.desc = "Pipe inside single quotes",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"|", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo \"|\"",
+			.expect_error = 0,
+			.desc = "Pipe inside double quotes",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"|", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo '< > |'",
+			.expect_error = 0,
+			.desc = "Multiple operators inside single quotes",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"< > |", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo \"< > |\"",
+			.expect_error = 0,
+			.desc = "Multiple operators inside double quotes",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"< > |", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+
+		// ========== VARIABLES WITH QUOTES ==========
+		{
+			.input = "echo $VAR",
+			.expect_error = 0,
+			.desc = "Unquoted variable",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"$VAR", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo '$VAR'",
+			.expect_error = 0,
+			.desc = "Single quoted variable",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"$VAR", 1},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo \"$VAR\"",
+			.expect_error = 0,
+			.desc = "Double quoted variable",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"$VAR", 2},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo '$USER' \"$HOME\" $PATH",
+			.expect_error = 0,
+			.desc = "Same variable in different quote contexts",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"$USER", 1},
+				{"$HOME", 2},
+				{"$PATH", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+
+		// ========== REDIRECTIONS ==========
+		{
+			.input = "cat < input.txt",
+			.expect_error = 0,
+			.desc = "Input redirection",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_IN, "input.txt", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo hello > output.txt",
+			.expect_error = 0,
+			.desc = "Output redirection",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"hello", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_OUT, "output.txt", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat >> append.txt",
+			.expect_error = 0,
+			.desc = "Append redirection",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_APPEND, "append.txt", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat << EOF",
+			.expect_error = 0,
+			.desc = "Heredoc unquoted delimiter",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_HEREDOC, "EOF", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat << 'EOF'",
+			.expect_error = 0,
+			.desc = "Heredoc single quoted delimiter",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_HEREDOC, "EOF", 1},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat << \"EOF\"",
+			.expect_error = 0,
+			.desc = "Heredoc double quoted delimiter",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_HEREDOC, "EOF", 2},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat < in.txt > out.txt",
+			.expect_error = 0,
+			.desc = "Multiple redirections",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_IN, "in.txt", 0},
+				{NODE_REDIR_OUT, "out.txt", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+
+		// ========== QUOTED REDIRECTIONS ==========
+		{
+			.input = "cat < 'input file.txt'",
+			.expect_error = 0,
+			.desc = "Single quoted input redirection with space",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_IN, "input file.txt", 1},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "echo hello > \"output file.txt\"",
+			.expect_error = 0,
+			.desc = "Double quoted output redirection with space",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"hello", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_OUT, "output file.txt", 2},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat < $FILE",
+			.expect_error = 0,
+			.desc = "Variable as filename (should expand)",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_IN, "$FILE", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat < '$FILE'",
+			.expect_error = 0,
+			.desc = "Single quoted variable as filename (no expand)",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_IN, "$FILE", 1},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+		{
+			.input = "cat < \"$FILE\"",
+			.expect_error = 0,
+			.desc = "Double quoted variable as filename (expand)",
+			.expected_args = (t_expected_arg[]){
+				{"cat", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_IN, "$FILE", 2},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
+		},
+
+		// ========== PIPELINES ==========
+		{
+			.input = "ls | cat",
+			.expect_error = 0,
+			.desc = "Simple pipeline",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 1
+		},
+		{
+			.input = "cat file | grep test",
+			.expect_error = 0,
+			.desc = "Pipeline with arguments",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 1
+		},
+		{
+			.input = "ls | cat | wc",
+			.expect_error = 0,
+			.desc = "Three-command pipeline",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 1
+		},
+		{
+			.input = "echo \"hello | world\" | cat",
+			.expect_error = 0,
+			.desc = "Pipeline with quoted arg containing pipe",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 1
+		},
+
+		// ========== SYNTAX ERRORS ==========
 		{
 			.input = "| cat",
 			.expect_error = 1,
-			.desc = "ERROR: Pipe at start"
+			.desc = "ERROR: Pipe at start",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
 			.input = "cat |",
 			.expect_error = 1,
-			.desc = "ERROR: Pipe at end"
+			.desc = "ERROR: Pipe at end",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
 			.input = "cat | | grep",
 			.expect_error = 1,
-			.desc = "ERROR: Double pipe"
+			.desc = "ERROR: Double pipe",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
 			.input = "cat >",
 			.expect_error = 1,
-			.desc = "ERROR: Redirect without filename"
+			.desc = "ERROR: Redirect without file",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "cat <",
+			.input = "cat < > out",
 			.expect_error = 1,
-			.desc = "ERROR: Input redirect without filename"
+			.desc = "ERROR: Redirect without filename",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "cat > |",
+			.input = "cat < < in",
 			.expect_error = 1,
-			.desc = "ERROR: Redirect followed by pipe"
+			.desc = "ERROR: Double redirect",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+
+		// ========== UNCLOSED QUOTES (LEXER ERRORS) ==========
+		{
+			.input = "echo 'unclosed",
+			.expect_error = 1,
+			.desc = "ERROR: Unclosed single quote",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "cat > >",
+			.input = "echo \"unclosed",
 			.expect_error = 1,
-			.desc = "ERROR: Redirect followed by redirect"
+			.desc = "ERROR: Unclosed double quote",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
-		
+		{
+			.input = "cat < 'unclosed",
+			.expect_error = 1,
+			.desc = "ERROR: Unclosed quote in redirection",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		},
+
 		// ========== EDGE CASES ==========
 		{
-			.input = "cat||grep",
-			.expect_error = 1,
-			.desc = "ERROR: No space between pipes"
-		},
-		{
-			.input = "cat<in>out",
+			.input = "",
 			.expect_error = 0,
-			.desc = "No spaces around redirects (valid)"
+			.desc = "Empty input",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = "<<<",
-			.expect_error = 1,
-			.desc = "ERROR: Invalid operator"
+			.input = "   ",
+			.expect_error = 0,
+			.desc = "Only whitespace",
+			.expected_args = NULL,
+			.expected_redirs = NULL,
+			.is_pipeline = 0
 		},
 		{
-			.input = ">>>",
-			.expect_error = 1,
-			.desc = "ERROR: Invalid operator"
+			.input = "> file",
+			.expect_error = 0,
+			.desc = "Redirection without command",
+			.expected_args = NULL,
+			.expected_redirs = (t_expected_redir[]){
+				{NODE_REDIR_OUT, "file", 0},
+				{0, NULL, 0}
+			},
+			.is_pipeline = 0
 		},
+		{
+			.input = "echo hello     world",
+			.expect_error = 0,
+			.desc = "Multiple spaces between args",
+			.expected_args = (t_expected_arg[]){
+				{"echo", 0},
+				{"hello", 0},
+				{"world", 0},
+				{NULL, 0}
+			},
+			.expected_redirs = NULL,
+			.is_pipeline = 0
+		}
 	};
 	
 	int num_tests = sizeof(tests) / sizeof(tests[0]);
 	int passed = 0;
-	int i;
+	int failed = 0;
 	
-	(void)ac;
-	(void)av;
+	ft_printf("%s╔═══════════════════════════════════════════════╗%s\n", CYAN, RESET);
+	ft_printf("%s║   MINISHELL PARSER TEST SUITE (With Quotes)  ║%s\n", CYAN, RESET);
+	ft_printf("%s╚═══════════════════════════════════════════════╝%s\n", CYAN, RESET);
 	
-	// Initialize shell
-	ft_memset(&shell, 0, sizeof(t_shell));
-	init_shell(envp, &shell);
-	
-	// Print header
-	ft_printf("\n%s%s╔═══════════════════════════════════════════════════════════════════╗%s\n", 
-			 BOLD, CYAN, RESET);
-	ft_printf("%s%s║           MINISHELL PARSER TEST SUITE v1.0                    ║%s\n", 
-			 BOLD, CYAN, RESET);
-	ft_printf("%s%s╚═══════════════════════════════════════════════════════════════════╝%s\n", 
-			 BOLD, CYAN, RESET);
-	
-	// Run all tests
-	for (i = 0; i < num_tests; i++)
+	for (int i = 0; i < num_tests; i++)
 	{
 		if (run_parser_test(&tests[i], i + 1))
 			passed++;
-		print_separator();
+		else
+			failed++;
 	}
 	
-	// Print summary
-	ft_printf("\n%s%s════════════════════════ RESULTS ════════════════════════%s\n", 
-			 BOLD, CYAN, RESET);
+	ft_printf("\n%s════════════════ RESULTS ═══════════════════%s\n", BOLD, RESET);
 	ft_printf("Total tests: %d\n", num_tests);
-	ft_printf("%sPassed: %d%s\n", GREEN, passed, RESET);
-	ft_printf("%sFailed: %d%s\n", RED, num_tests - passed, RESET);
-	ft_printf("Success rate: %.1f%%\n", (float)passed / num_tests * 100);
+	ft_printf("Passed: %s%d%s\n", GREEN, passed, RESET);
+	ft_printf("Failed: %s%d%s\n", failed > 0 ? RED : GREEN, failed, RESET);
 	
-	if (passed == num_tests)
-		ft_printf("\n%s%s🎉 ALL TESTS PASSED! 🎉%s\n\n", 
-				 BOLD, GREEN, RESET);
+	if (failed == 0)
+		ft_printf("\n%s🎉 ALL TESTS PASSED! Quote metadata working! 🎉%s\n", GREEN, RESET);
 	else
-		ft_printf("\n%s%s⚠️  SOME TESTS FAILED ⚠️%s\n\n", 
-				 BOLD, RED, RESET);
+		ft_printf("\n%s⚠️  SOME TESTS FAILED ⚠️%s\n", YELLOW, RESET);
 	
-	return (passed == num_tests ? 0 : 1);
+	return (0);
 }

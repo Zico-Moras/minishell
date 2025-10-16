@@ -8,6 +8,7 @@
 
 void	shell_loop(t_shell *shell, t_token *tokens)
 {
+	t_ast_node	*ast;
 	while (1)
 	{
 		setup_signals();
@@ -20,9 +21,18 @@ void	shell_loop(t_shell *shell, t_token *tokens)
 			continue ;
 		}
 		token_print(tokens);
+		ast = parse(tokens);
+		ast_print(ast, 0);
+		if (ast)
+		{
+			if (expand_ast(ast, shell)) // Expand the AST
+				ast_print(ast, 0);      // Print the expanded AST
+			else
+				ft_printf("Expansion failed\n");
+			ast_free(ast);              // Free the AST after printing
+		}
 		token_lstclear(&tokens);
 	}
-
 }
 
 int	main(int ac, char **av, char **envp)

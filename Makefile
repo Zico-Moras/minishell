@@ -23,8 +23,8 @@ SRC = \
 	./parser_utils2.c \
 	./parse_node_utils.c \
 	./parser_syntax.c \
-#	./expander.c \
-#	./expander_utils.c \
+	./expander.c \
+	./expander_utils.c \
 
 OBJ = $(SRC:.c=.o)
 
@@ -37,6 +37,12 @@ TEST_LEXER_NAME = test_lexer
 TEST_PARSER_SRC = ./test_parser_main.c
 TEST_PARSER_OBJ = $(TEST_PARSER_SRC:.c=.o)
 TEST_PARSER_NAME = test_parser
+
+# Expander test configuration
+TEST_EXPANDER_SRC = ./test_expander_main.c
+TEST_EXPANDER_OBJ = $(TEST_EXPANDER_SRC:.c=.o)
+TEST_EXPANDER_NAME = test_expander
+
 
 ##@ Main Targets
 
@@ -108,11 +114,25 @@ test_parser_clean:				## Clean parser test files
 
 test_parser_re: test_parser_clean test_parser	## Rebuild parser tests
 
+##@ Test Targets - Expander
+test_expander: libft $(TEST_EXPANDER_OBJ) $(filter-out ./main.o,$(OBJ))	## Build and run expander tests
+	@echo "Compiling expander test binary..."
+	@$(CC) $(CFLAGS) $(TEST_EXPANDER_OBJ) $(filter-out ./main.o,$(OBJ)) -o $(TEST_EXPANDER_NAME) $(LIBFT) $(RFLAGS)
+
+$(TEST_EXPANDER_OBJ): $(TEST_EXPANDER_SRC)
+	@echo "Compiling $<..."
+	@$(CC) $(CFLAGS) -c $< -o $@
+
+test_expander_clean:				## Clean expander test files
+	@rm -f $(TEST_EXPANDER_OBJ) $(TEST_EXPANDER_NAME)
+
+test_expander_re: test_expander_clean test_expander	## Rebuild expander tests
+
 ##@ Test Targets - All Tests
 
-test_all: test_lexer test_parser		## Build and run all tests
+test_all: test_lexer test_parser test_expander	## Build and run all tests
 
-test_clean: test_lexer_clean test_parser_clean	## Clean all test files
+test_clean: test_lexer_clean test_parser_clean test_expander_clean	## Clean all test files
 
 test_re: test_clean test_all			## Rebuild all tests
 
@@ -218,4 +238,5 @@ help:						## Show this help message
 .PHONY: all libft clean fclean cleanlibft re gdb valgrind vgdb helgrind vgdb_helgrind supfile get_log vgdb_cmd help \
 	test_lexer test_lexer_clean test_lexer_re \
 	test_parser test_parser_clean test_parser_re \
+	test_expander test_expander_clean test_expander_re \
 	test_all test_clean test_re

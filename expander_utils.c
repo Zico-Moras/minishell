@@ -1,45 +1,115 @@
-#includes "includes/minishell.h"
+#include "includes/minishell.h"
 
-char	*mini_getenv(char *var_name, t_shell *shell)
+/**
+ * ft_charjoin - Append a character to a string
+ * @s: String to append to (will be freed)
+ * @c: Character to append
+ * 
+ * Creates new string with character appended.
+ * Frees the original string.
+ * 
+ * Returns: New string with c appended, or NULL on error
+ */
+char	*ft_charjoin(char *s, char c)
 {
-	size_t	len;
-	int	i;
+	char	*result;
+	int		len;
+	int		i;
 
-	len = ft_strlen(var);
+	if (!s)
+		return (NULL);
+	len = ft_strlen(s);
+	result = malloc(len + 2);
+	if (!result)
+	{
+		free(s);
+		return (NULL);
+	}
+	i = 0;
+	while (s[i])
+	{
+		result[i] = s[i];
+		i++;
+	}
+	result[i] = c;
+	result[i + 1] = '\0';
+	free(s);
+	return (result);
+}
+
+/**
+ * get_env_value - Get value of environment variable
+ * @name: Variable name (without $)
+ * @shell: Shell context with envp
+ * 
+ * Searches shell->envp for "NAME=value" format.
+ * 
+ * Returns: Pointer to value (in envp), or NULL if not found
+ */
+char	*get_env_value(char *name, t_shell *shell)
+{
+	int		i;
+	int		len;
+	char	*env_entry;
+
+	if (!name || !shell || !shell->envp)
+		return (NULL);
+	len = ft_strlen(name);
 	i = 0;
 	while (shell->envp[i])
 	{
-		if (!ft_strncmp(shell->envp[i], var, len) && shell->envp[i][len] == '=')
-			return (shell->envp[i] + len + 1);
+		env_entry = shell->envp[i];
+		if (ft_strncmp(env_entry, name, len) == 0 
+			&& env_entry[len] == '=')
+			return (env_entry + len + 1);
 		i++;
 	}
 	return (NULL);
 }
 
 /**
- * get_env_value - Gets value of environment variable
- * @var_name: Name of variable to look up
- * @shell: Shell context containing environment and exit status
+ * get_var_name - Extract variable name from $VAR
+ * @str: String starting with $ (e.g., "$HOME")
+ * @len: Output parameter for name length
  * 
- * Handles special variables:
- * - "?" → exit status of last command
- * - "$" → process ID (optional)
- * - Others → lookup in environment
+ * Extracts variable name following bash rules:
+ * - Must start with letter or underscore
+ * - Can contain letters, digits, underscores
+ * - Case-sensitive
+ * - Special: $? is valid
  * 
- * Returns: String value, or "" if not found. Caller must free for $? and $$.
+ * Examples:
+ *   "$HOME"  → name="HOME", len=4
+ *   "$?"     → name="?", len=1
+ *   "$123"   → NULL (starts with digit)
+ *   "$"      → NULL (nothing after $)
+ * 
+ * Returns: Pointer to name (after $), or NULL if invalid
  */
-char	*get_env_value(char *var_name, t_shell *shell)
+char	*get_var_name(char *str, int *len)
 {
-	char	*value;
+	int	i;
 
-	if (!var_name)
-		return (ft_strdup(""));
-	if (ft_strcmp(var_name, "?") == 0)
-		return (ft_itoa(shell->exit_status));
-	if (ft_strcmp(var_name, "$") == 0)
-		return (ft_itoa(getpid()));
-	value = mini_getenv(var_name);
-	if (!value)
-		return (ft_strdup(""));
-	return (value);
+	if (!str || str[0] != '$')
+		return (NULL);
+	if (str[1] == '?')
+	{
+		*len = 1;
+		return (str + 1);
+	}
+	if (!str[1])
+	{
+		*len = 0;
+		return (NULL);
+	}
+	if (!ft_isalpha(str[1]) && str[1] != '_')
+	{
+		*len = 0;
+		return (NULL);
+	}
+	i = 1;
+	while (str[i] && (ft_isalnum(str[i]) || str[i] == '_'))
+		i++;
+	*len = i - 1;
+	return (str + 1);
 }

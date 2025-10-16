@@ -8,7 +8,7 @@ int	create_word_token(t_token **tokens, char *word, int quote_state)
 	if (word && ft_strchr(word, '$') && quote_state != 1)
 		type = TOKEN_VAR;
 
-	token_lstadd_back(tokens, token_new(type, word, quote_state != 0));
+	token_lstadd_back(tokens, token_new(type, word, quote_state));
 	return (1);
 }
 
